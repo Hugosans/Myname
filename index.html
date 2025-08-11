@@ -635,6 +635,13 @@
                 window.speechSynthesis.cancel(); // Cancel any ongoing speech
                 const utterance = new SpeechSynthesisUtterance(textToSpeak);
                 utterance.lang = 'zh-HK';
+                
+                // On iOS, we need to find and assign a specific Cantonese voice
+                const cantoneseVoice = voices.find(voice => voice.lang === 'zh-HK');
+                if (cantoneseVoice) {
+                    utterance.voice = cantoneseVoice;
+                }
+
                 utterance.rate = 1.0;
                 if (onEndCallback && typeof onEndCallback === 'function') {
                     utterance.onend = onEndCallback;
