@@ -29,6 +29,10 @@
             position: relative;
             box-shadow: 0 10px 25px rgba(0,0,0,0.2);
             background-color: #F3F4F6;
+            /* Disable text selection on long press for mobile */
+            -webkit-user-select: none; /* Safari */
+            -ms-user-select: none; /* IE 10+ */
+            user-select: none; /* Standard syntax */
         }
 
         .screen {
@@ -468,6 +472,7 @@
         let isListening = false;
         let listeningForContinue = false;
         let waitingForHistoryConfirmation = false; // Flag for history prompt
+        let audioContext; // For unlocking audio on mobile
 
         // --- Interaction Logic ---
         let longPressTimer;
@@ -844,7 +849,7 @@
             const announcements = {
                 'purchase-screen': { visual: '你在購買頁面。長按兩秒即可發問。', spoken: '你在購買頁面。長按兩秒即可發問商品資訊。' }, 
                 'analysis-screen': { visual: '分析頁', spoken: '你已到達分析頁。需要為您讀出歷史記錄嗎？'},
-                'tracker-screen': { visual: '週期追蹤', spoken: '週期追蹤。距離下次經期預計仲有15日。如需更加詳細，請講繼續'},
+                'tracker-screen': { visual: '週期追蹤', spoken: '週期追蹤。距離下次經期預計仲有十五日。如需更加詳細，請講繼續'},
                 'education-screen': { visual: '學習頁。長按兩秒即可發問。', spoken: '學習頁。長按兩秒即可發問問題。'}
             };
             const announcement = announcements[screenId];
@@ -1178,6 +1183,25 @@
             });
         };
 
+        function unlockAudio() {
+            if (audioContext && audioContext.state === 'running') return;
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+                // Play a silent buffer to unlock the audio context in some browsers
+                const buffer = audioContext.createBuffer(1, 1, 22050);
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+                source.start(0);
+                console.log("Audio Context unlocked.");
+            } catch (e) {
+                console.error("Could not unlock audio context:", e);
+            }
+        }
+
         window.onload = () => {
             const splashScreen = document.getElementById('splash-screen');
             let startTimeout;
@@ -1191,6 +1215,7 @@
             const startAppFlow = () => {
                 if (flowStarted) return; // Prevent multiple executions
                 flowStarted = true;
+                unlockAudio(); // Unlock audio on the first user interaction
                 clearTimeout(startTimeout); 
                 splashScreen.removeEventListener('click', startAppFlow);
                 splashScreen.classList.add('fade-out');
