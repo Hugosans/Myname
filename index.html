@@ -261,15 +261,15 @@
         .dot-flashing:nth-child(3) { animation-delay: 0.4s; }
 
         @keyframes dotFlashing {
-          0% {
-            background-color: #ffffff;
-            transform: scale(1);
-          }
-          50%,
-          100% {
-            background-color: #d9d3ff;
-            transform: scale(0.7);
-          }
+            0% {
+                background-color: #ffffff;
+                transform: scale(1);
+            }
+            50%,
+            100% {
+                background-color: #d9d3ff;
+                transform: scale(0.7);
+            }
         }
 
     </style>
@@ -324,7 +324,7 @@
                     </div>
                     <!-- Slide 3 -->
                     <div class="onboarding-slide">
-                         <div class="onboarding-image-container">
+                             <div class="onboarding-image-container">
                              <svg class="w-48 h-48 text-purple-300" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4h-3.17L15 2H9L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"></path></svg>
                         </div>
                         <div class="onboarding-content">
@@ -453,9 +453,15 @@
         let voiceTimeout;
         let stream;
         let isListening = false;
-        let listeningForContinue = false;
+        let listeningForContinue = false; // Flag for tracker-screen conversational flow
         let waitingForHistoryConfirmation = false; // Flag for history prompt
         let isAudioUnlocked = false; // Flag for mobile audio unlock
+        
+        // Mapping of screen IDs to their chat input/content elements
+        const chatScreenMap = {
+            'purchase-screen': { inputId: 'purchase-input', chatContentId: 'purchase-chat-content' },
+            'education-screen': { inputId: 'education-input', chatContentId: 'education-chat-content' }
+        };
 
         // --- Interaction Logic ---
         let longPressTimer;
@@ -554,52 +560,44 @@
             
             recognition.onresult = (event) => {
                 const command = event.results[0][0].transcript.trim().toLowerCase().replace(/[.,。]/g, '');
+                const originalTranscript = event.results[0][0].transcript;
                 const activeScreenEl = document.querySelector('.screen.active');
                 const activeScreenId = activeScreenEl ? activeScreenEl.id : null;
 
                 // --- State-dependent Conversational Logic ---
-                // This block handles specific questions the app has asked the user.
                 if (waitingForHistoryConfirmation) {
-                    waitingForHistoryConfirmation = false; // The question has been answered, so reset the flag.
+                    waitingForHistoryConfirmation = false;
                     if (command.includes('需要') || command.includes('好') || command.includes('yes')) {
                         readHistory();
                     } else {
-                        // User said something else, just move on.
                         speak({ visual: "好的。", spoken: "好的。", duration: 2000 });
                     }
-                    return; // IMPORTANT: Stop further processing after handling the conversational response.
+                    return;
                 }
 
                 // --- General Command Processing ---
-                // These commands can be given at any time.
-
-                // 1. Navigation Commands
-                if (['購買', '買', '分析', '掃描', '素描', '週期', '學習'].some(keyword => command.includes(keyword))) {
-                    speak({ visual: `收到指令：「${command}」`, duration: 1500 });
-                    setTimeout(() => processVoiceCommand(command), 1600);
+                const navCommands = {
+                    '購買': 'purchase-screen', '買': 'purchase-screen',
+                    '分析': 'analysis-screen', '掃描': 'analysis-screen', '素描': 'analysis-screen',
+                    '週期': 'tracker-screen',
+                    '學習': 'education-screen'
+                };
+                
+                // Prioritize navigation commands
+                const isNavCommand = Object.keys(navCommands).some(key => command.includes(key));
+                
+                if (isNavCommand) {
+                    processVoiceCommand(command);
                     return;
                 }
-
-                // 2. Context-Specific Commands (like reading history manually)
-                if (activeScreenId === 'analysis-screen' && (command.includes('歷史') || command.includes('記錄'))) {
-                    readHistory();
-                    return;
+                
+                // If not a navigation command, handle as chat input
+                if (chatScreenMap[activeScreenId]) {
+                    handleChatInput(originalTranscript, activeScreenId);
+                } else {
+                    // Fallback for non-chat screens like Analysis or Tracker
+                    speak({ visual: `對唔住，聽唔明指令「${command}」`, duration: 3000 });
                 }
-
-                // 3. Chat Input Commands
-                if (activeScreenId === 'purchase-screen' || activeScreenId === 'education-screen') {
-                    const inputId = activeScreenId === 'purchase-screen' ? 'purchase-input' : 'education-input';
-                    const inputField = document.getElementById(inputId);
-                    if (inputField) {
-                        inputField.value = event.results[0][0].transcript;
-                        const sendButtonId = activeScreenId === 'purchase-screen' ? 'send-purchase-btn' : 'send-education-btn';
-                        document.getElementById(sendButtonId).click();
-                    }
-                    return;
-                }
-
-                // 4. Fallback for Unrecognized Commands
-                processVoiceCommand(command);
             };
 
             recognition.onerror = (event) => {
@@ -765,9 +763,9 @@
                     console.error("Recognition start error:", e);
                     isListening = false;
                     if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
-                         speak({ visual: "請先授權麥克風權限", duration: 3000 });
+                        speak({ visual: "請先授權麥克風權限", duration: 3000 });
                     } else {
-                         speak({ visual: "語音功能目前無法使用", duration: 3000 });
+                        speak({ visual: "語音功能目前無法使用", duration: 3000 });
                     }
                 }
             } else {
@@ -788,9 +786,7 @@
             // Handle navigation
             let targetScreen = '';
             if (cmd.includes('買') || cmd.includes('purchase')) targetScreen = 'purchase-screen';
-            else if (cmd.includes('分析') || cmd.includes('health') || cmd.includes('掃描') || cmd.includes('素描')) {
-                targetScreen = 'analysis-screen';
-            }
+            else if (cmd.includes('分析') || cmd.includes('health') || cmd.includes('掃描') || cmd.includes('素描')) targetScreen = 'analysis-screen';
             else if (cmd.includes('週期') || cmd.includes('tracker')) targetScreen = 'tracker-screen';
             else if (cmd.includes('學習') || cmd.includes('education')) targetScreen = 'education-screen';
 
@@ -803,6 +799,19 @@
                 speak({ visual: `對唔住，聽唔明指令「${cmd}」`, duration: 3000 });
             }
         }
+        
+        // New function to handle voice input as chat message
+        function handleChatInput(transcript, screenId) {
+            const { inputId, chatContentId } = chatScreenMap[screenId];
+            if (inputId) {
+                const inputField = document.getElementById(inputId);
+                inputField.value = transcript;
+                // Programmatically trigger the send button to send the message
+                const sendButtonId = screenId === 'purchase-screen' ? 'send-purchase-btn' : 'send-education-btn';
+                document.getElementById(sendButtonId).click();
+            }
+        }
+
 
         async function initCamera() {
             let cameraView = document.getElementById('camera-view');
@@ -838,19 +847,20 @@
             
             const announcements = {
                 'purchase-screen': { visual: '你在購買頁面。長按兩秒即可發問。', spoken: '你在購買頁面。長按兩秒即可發問商品資訊。' }, 
-                'analysis-screen': { visual: '分析頁', spoken: '你已到達分析頁。需要為您讀出歷史記錄嗎？'},
+                'analysis-screen': { visual: '分析頁', spoken: '你已到達分析頁。需要為您讀出歷史記錄嗎？如需要請回答，需要，如不需要請忽略'},
                 'tracker-screen': { visual: '週期追蹤', spoken: '週期追蹤。距離下次經期預計仲有15日。如需更加詳細，請講繼續'},
                 'education-screen': { visual: '學習頁。長按兩秒即可發問。', spoken: '學習頁。長按兩秒即可發問問題。'}
             };
             const announcement = announcements[screenId];
             if(announcement) {
-                speak({ visual: announcement.visual, spoken: announcement.spoken, duration: 6000 });
+                const duration = screenId === 'analysis-screen' ? 8000 : 6000;
+                speak({ visual: announcement.visual, spoken: announcement.spoken, duration: duration });
                 if (screenId === 'tracker-screen') {
                     listeningForContinue = true;
-                    setTimeout(() => startVoiceCommand({ silent: true }), 6100);
+                    setTimeout(() => startVoiceCommand({ silent: true }), duration + 100);
                 } else if (screenId === 'analysis-screen') {
                     waitingForHistoryConfirmation = true;
-                    setTimeout(() => startVoiceCommand({ silent: true }), 6100);
+                    setTimeout(() => startVoiceCommand({ silent: true }), duration + 100);
                 }
             }
         }
@@ -921,7 +931,7 @@
                         <p class="text-gray-700">${result.details}</p>
                     </div>
                      <button class="w-full mt-4 bg-purple-600 text-white font-bold py-3 px-4 rounded-lg" onclick="rescanFromResults()">重新掃描</button>
-                     <button class="w-full mt-2 bg-gray-200 text-gray-800 font-bold py-3 px-4 rounded-lg" onclick="resetScanView()">返回</button>
+                    <button class="w-full mt-2 bg-gray-200 text-gray-800 font-bold py-3 px-4 rounded-lg" onclick="resetScanView()">返回</button>
                 `;
                 document.getElementById('scan-camera-view').classList.add('hidden');
                 resultsView.classList.remove('hidden');
@@ -1004,7 +1014,7 @@
                             <p class="text-sm text-gray-500 mb-1 ml-2">AI 助手</p>
                             <div class="bg-white p-4 rounded-lg inline-block"><p>你好！請問想搵啲咩產品？</p></div>
                         </div>
-                         <div class="flex justify-end">
+                        <div class="flex justify-end">
                             <div class="bg-purple-600 text-white p-3 rounded-lg max-w-xs"><p>幫我搵日用、量多嘅衛生巾。</p></div>
                         </div>
                         <div>
@@ -1162,9 +1172,9 @@
         }
 
         const setupTypingIndicator = (inputId) => {
-             const input = document.getElementById(inputId);
-             if (!input) return;
-             input.addEventListener('input', () => {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            input.addEventListener('input', () => {
                 if (input.value.trim() !== '') {
                     typingIndicator.classList.add('visible');
                 } else {
