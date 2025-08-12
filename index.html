@@ -411,6 +411,9 @@
         let recognition;
         let isAudioUnlocked = false;
         
+        // Check if Speech Recognition is supported
+        let speechNotSupported = !SpeechRecognition;
+
         // Mapping of screen IDs to their chat input/content elements
         const chatScreenMap = {
             'purchase-screen': { inputId: 'purchase-input', chatContentId: 'purchase-chat-content' },
@@ -459,13 +462,25 @@
         
         // Modified function to start voice command with "Listening" prompt
         function startVoiceCommand() {
+            if (speechNotSupported) {
+                 speak({ visual: "對唔住，您嘅瀏覽器唔支援語音識別功能。", spoken: "對唔住，您嘅瀏覽器唔支援語音識別功能。" });
+                 return;
+            }
+
             if (isListening) return;
             if (recognition) {
                 try {
                     speak({ 
                         visual: '聆聽中...', 
                         spoken: '聆聽中', 
-                        onEndCallback: () => recognition.start()
+                        onEndCallback: () => {
+                            // Ensure recognition starts after the "聆聽中" audio ends
+                            setTimeout(() => {
+                                if (recognition && !isListening) {
+                                    recognition.start();
+                                }
+                            }, 100);
+                        }
                     });
                 } catch(e) {
                     console.error("Recognition start error:", e);
@@ -480,6 +495,158 @@
                 speak({ visual: "對唔住，您嘅瀏覽器唔支援語音識別功能。", spoken: "對唔住，您嘅瀏覽器唔支援語音識別功能。" });
             }
         }
+        
+        // --- Interaction Logic ---
+        let longPressTimer;
+
+        // Long Press for Voice Commands
+        const startLongPress = (e) => {
+            if (e.target.closest('button, input')) return;
+            if (isListening) return;
+            longPressTimer = setTimeout(() => {
+                startVoiceCommand();
+            }, 2000); // 2 seconds
+        };
+
+        const cancelLongPress = () => {
+            clearTimeout(longPressTimer);
+        };
+
+        appContainer.addEventListener('mousedown', startLongPress);
+        appContainer.addEventListener('mouseup', cancelLongPress);
+        appContainer.addEventListener('mouseleave', cancelLongPress);
+        appContainer.addEventListener('touchstart', startLongPress, { passive: true });
+        appContainer.addEventListener('touchend', cancelLongPress);
+        appContainer.addEventListener('touchmove', cancelLongPress);
+
+        // Tap Logic
+        let tapCount = 0;
+        let tapTimer;
+
+        appContainer.addEventListener('click', (e) => {
+            // Prevent tap logic from firing on buttons, inputs, or other interactive elements.
+            if (e.target.closest('button, input, .nav-item, .onboarding-content')) {
+                return;
+            }
+
+            tapCount++;
+            clearTimeout(tapTimer); // Clear previous timer
+
+            tapTimer = setTimeout(() => {
+                if (tapCount === 1) {
+                    // Single tap action
+                    handleSingleTap();
+                } else if (tapCount >= 2) {
+                    // Double tap action
+                    handleDoubleTap();
+                }
+                tapCount = 0; // Reset tap count after action
+            }, 300); // 300ms window for double tap
+        });
+
+        function handleSingleTap() {
+            const activeScreen = document.querySelector('.screen.active');
+            if (!activeScreen) return;
+
+            if (activeScreen.id === 'permission-screen') {
+                requestPermissions(true); // Grant
+            } else if (activeScreen.id === 'analysis-screen') {
+                const cameraView = document.getElementById('scan-camera-view');
+                const resultsView = document.getElementById('scan-results-view');
+                if ((cameraView && !cameraView.classList.contains('hidden')) || (resultsView && !resultsView.classList.contains('hidden'))) {
+                    resetScanView();
+                }
+            }
+        }
+
+        function handleDoubleTap() {
+            const activeScreen = document.querySelector('.screen.active');
+            if (!activeScreen) return;
+
+            if (activeScreen.id === 'permission-screen') {
+                requestPermissions(false); // Deny
+            } else if (activeScreen.id === 'analysis-screen') {
+                const cameraView = document.getElementById('scan-camera-view');
+                const resultsView = document.getElementById('scan-results-view');
+
+                if (cameraView && !cameraView.classList.contains('hidden')) {
+                    startScan();
+                } else if (resultsView && !resultsView.classList.contains('hidden')) {
+                    rescanFromResults();
+                } else {
+                    startScanProcess();
+                }
+            }
+        }
+        
+        if (!speechNotSupported) {
+             recognition = new SpeechRecognition();
+             recognition.continuous = false;
+             recognition.lang = 'zh-HK';
+             recognition.interimResults = false;
+             recognition.maxAlternatives = 1;
+        
+             recognition.onstart = () => { isListening = true; };
+             recognition.onend = () => { isListening = false; };
+             
+             recognition.onresult = (event) => {
+                 const command = event.results[0][0].transcript.trim().toLowerCase().replace(/[.,。]/g, '');
+                 const originalTranscript = event.results[0][0].transcript;
+                 const activeScreenId = document.querySelector('.screen.active').id;
+                 
+                 const navCommands = {
+                     '購買': 'purchase-screen', '購物': 'purchase-screen', '買嘢': 'purchase-screen',
+                     '分析': 'analysis-screen', '健康': 'analysis-screen', '掃描': 'analysis-screen', '素描': 'analysis-screen',
+                     '週期': 'tracker-screen', '月經': 'tracker-screen',
+                     '學習': 'education-screen', '學嘢': 'education-screen', '教材': 'education-screen'
+                 };
+                 
+                 if (activeScreenId === 'tracker-screen' && (command.includes('繼續') || command.includes('go on'))) {
+                      speak({ visual: "為您詳細說明...", spoken: "您嘅經期預計喺9月9號到12號，排卵日大約喺8月26號。" });
+                      return;
+                 }
+                 
+                 if (activeScreenId === 'analysis-screen' && (command.includes('需要') || command.includes('好') || command.includes('yes'))) {
+                     readHistory();
+                     return;
+                 }
+                 
+                 const isNavCommand = Object.keys(navCommands).some(key => command.includes(key));
+                 if (isNavCommand) {
+                     let targetScreen = Object.values(navCommands).find(screen => command.includes(screen));
+                     if (!targetScreen) {
+                        for (const keyword in navCommands) {
+                            if (command.includes(keyword)) {
+                                targetScreen = navCommands[keyword];
+                                break;
+                            }
+                        }
+                     }
+                     
+                     if (targetScreen) {
+                         const targetElement = document.querySelector(`button[onclick*="${targetScreen}"]`);
+                         if (targetElement) {
+                             navigate(targetScreen, targetElement);
+                         }
+                     }
+                     return;
+                 }
+                 
+                 if (chatScreenMap[activeScreenId]) {
+                     handleChatInput(originalTranscript, activeScreenId);
+                 } else {
+                     speak({ visual: `對唔住，聽唔明指令「${command}」`, spoken: `對唔住，聽唔明指令「${command}」` });
+                 }
+             };
+
+             recognition.onerror = (event) => {
+                 isListening = false;
+                 if (event.error !== 'no-speech') {
+                     console.error("Recognition error:", event.error);
+                 }
+             };
+        }
+
 
         // Updated navigate function with new voice prompts and logic
         function navigate(screenId, clickedElement) {
@@ -505,10 +672,10 @@
                     visual: announcement.visual, 
                     spoken: announcement.spoken, 
                     onEndCallback: () => {
-                        // For pages that require immediate listening for a response
-                        if (screenId === 'analysis-screen' || screenId === 'tracker-screen' || screenId === 'onboarding-screen' || screenId === 'permission-screen') {
-                             // Wait a bit before starting the voice command to avoid listening to our own speech
-                             setTimeout(startVoiceCommand, 500);
+                        if (!speechNotSupported) {
+                             if (screenId === 'analysis-screen' || screenId === 'tracker-screen' || screenId === 'onboarding-screen' || screenId === 'permission-screen') {
+                                 setTimeout(startVoiceCommand, 500);
+                             }
                         }
                     }
                 });
