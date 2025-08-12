@@ -271,7 +271,6 @@
                 transform: scale(0.7);
             }
         }
-
     </style>
 </head>
 <body class="bg-gray-200">
@@ -397,6 +396,210 @@
     </div>
 
     <script>
+        // --- Global App Variables and Functions ---
+        const appContainer = document.getElementById('app-container');
+        const screens = document.querySelectorAll('.screen');
+        const navItems = document.querySelectorAll('.nav-item');
+        const voicePromptVisual = document.getElementById('voice-prompt-visual');
+        const voicePromptText = document.getElementById('voice-prompt-text');
+        const typingIndicator = document.getElementById('typing-indicator');
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        
+        let voiceTimeout;
+        let stream;
+        let isListening = false;
+        let recognition;
+        let isAudioUnlocked = false;
+        
+        // Mapping of screen IDs to their chat input/content elements
+        const chatScreenMap = {
+            'purchase-screen': { inputId: 'purchase-input', chatContentId: 'purchase-chat-content' },
+            'education-screen': { inputId: 'education-input', chatContentId: 'education-chat-content' }
+        };
+
+        // --- Core App Functions ---
+
+        // Modified speak function to cancel ongoing speech and handle callbacks
+        function speak({ visual, spoken, onEndCallback }) {
+            // Ensure speech synthesis is available
+            if (!('speechSynthesis' in window)) {
+                console.warn("Speech synthesis not supported.");
+                if (onEndCallback && typeof onEndCallback === 'function') onEndCallback();
+                return;
+            }
+            
+            // Immediately cancel any ongoing speech
+            window.speechSynthesis.cancel();
+            
+            // Show visual prompt
+            const textToSpeak = spoken || visual;
+            voicePromptText.textContent = visual;
+            voicePromptVisual.classList.add('visible');
+            if (voiceTimeout) clearTimeout(voiceTimeout);
+            
+            const utterance = new SpeechSynthesisUtterance(textToSpeak);
+            utterance.lang = 'zh-HK';
+            
+            // Find a Cantonese voice if available
+            const cantoneseVoice = window.speechSynthesis.getVoices().find(voice => voice.lang === 'zh-HK');
+            if (cantoneseVoice) {
+                utterance.voice = cantoneseVoice;
+            }
+            utterance.rate = 1.0;
+            
+            utterance.onend = () => {
+                voicePromptVisual.classList.remove('visible');
+                if (onEndCallback && typeof onEndCallback === 'function') {
+                    onEndCallback();
+                }
+            };
+            
+            window.speechSynthesis.speak(utterance);
+        }
+        
+        // Modified function to start voice command with "Listening" prompt
+        function startVoiceCommand() {
+            if (isListening) return;
+            if (recognition) {
+                try {
+                    speak({ 
+                        visual: '聆聽中...', 
+                        spoken: '聆聽中', 
+                        onEndCallback: () => recognition.start()
+                    });
+                } catch(e) {
+                    console.error("Recognition start error:", e);
+                    isListening = false;
+                    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+                        speak({ visual: "請先授權麥克風權限", spoken: "請先授權麥克風權限" });
+                    } else {
+                        speak({ visual: "語音功能目前無法使用", spoken: "語音功能目前無法使用" });
+                    }
+                }
+            } else {
+                speak({ visual: "對唔住，您嘅瀏覽器唔支援語音識別功能。", spoken: "對唔住，您嘅瀏覽器唔支援語音識別功能。" });
+            }
+        }
+
+        // Updated navigate function with new voice prompts and logic
+        function navigate(screenId, clickedElement) {
+            if (screenId !== 'analysis-screen' && stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+
+            screens.forEach(s => s.classList.remove('active'));
+            document.getElementById(screenId).classList.add('active');
+
+            navItems.forEach(item => item.classList.remove('active'));
+            clickedElement.classList.add('active');
+            
+            const announcements = {
+                'purchase-screen': { visual: '你現在在購買頁', spoken: '你現在在購買頁，長按兩秒即可查詢購買資料' }, 
+                'analysis-screen': { visual: '你現在在分析頁', spoken: '你現在在分析頁，需要提供歷史掃描紀錄嗎，如需要請說，需要，如不需要請忽略。你也可以按兩下屏幕開始準備掃描' },
+                'tracker-screen': { visual: '你現在在週期頁', spoken: '你現在在週期頁，距離下次經期預計仲有15日。如需更加詳細，請講，繼續。' },
+                'education-screen': { visual: '你現在在學習頁', spoken: '你現在在學習頁，長按兩秒即可詢問任何問題' }
+            };
+            const announcement = announcements[screenId];
+            if(announcement) {
+                speak({ 
+                    visual: announcement.visual, 
+                    spoken: announcement.spoken, 
+                    onEndCallback: () => {
+                        // For pages that require immediate listening for a response
+                        if (screenId === 'analysis-screen' || screenId === 'tracker-screen' || screenId === 'onboarding-screen' || screenId === 'permission-screen') {
+                             // Wait a bit before starting the voice command to avoid listening to our own speech
+                             setTimeout(startVoiceCommand, 500);
+                        }
+                    }
+                });
+            }
+        }
+        
+        function checkPermissionsAndStart() {
+            if (navigator.permissions && navigator.permissions.query) {
+                navigator.permissions.query({ name: 'microphone' }).then(micPermission => {
+                    navigator.permissions.query({ name: 'camera' }).then(cameraPermission => {
+                        if (micPermission.state === 'granted' && cameraPermission.state === 'granted') {
+                            initializeApp(true);
+                        } else {
+                            document.getElementById('onboarding-screen').classList.add('active');
+                            updateOnboardingView();
+                        }
+                    }).catch(e => {
+                        console.error("Camera permission query failed:", e);
+                        document.getElementById('onboarding-screen').classList.add('active');
+                        updateOnboardingView();
+                    });
+                }).catch(e => {
+                    console.error("Microphone permission query failed:", e);
+                    document.getElementById('onboarding-screen').classList.add('active');
+                    updateOnboardingView();
+                });
+            } else {
+                document.getElementById('onboarding-screen').classList.add('active');
+                updateOnboardingView();
+            }
+        }
+
+        async function requestPermissions(grant) {
+            if (grant) {
+                try {
+                    const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    mediaStream.getTracks().forEach(track => track.stop());
+                    initializeApp(false);
+                } catch (err) {
+                    console.error("Permission denied:", err);
+                    handlePermissionDenial();
+                }
+            } else {
+                handlePermissionDenial();
+            }
+        }
+
+        function handlePermissionDenial() {
+            const permissionScreen = document.getElementById('permission-screen');
+            const p = permissionScreen.querySelector('p');
+            const btn = permissionScreen.querySelector('button');
+            
+            p.textContent = '權限已被拒絕。語音同掃描功能將無法使用。請喺瀏覽器設定中允許權限，然後再試一次。';
+            btn.textContent = '再試一次';
+            btn.onclick = () => showPermissionScreen();
+            
+            speak({ visual: "權限被拒絕。部分核心功能將無法使用。", spoken: "權限被拒絕。部分核心功能將無法使用。" });
+        }
+
+        function initializeApp(wasAlreadyAuthorized = false) {
+            document.getElementById('onboarding-screen').classList.remove('active');
+            document.getElementById('permission-screen').classList.remove('active');
+            
+            document.getElementById('app-header').style.opacity = 1;
+            document.getElementById('bottom-nav').classList.add('visible');
+            
+            setScreenContent();
+            
+            setupTypingIndicator('purchase-input');
+            setupTypingIndicator('education-input');
+
+            document.getElementById('purchase-screen').classList.add('active');
+            const purchaseButton = document.querySelector("button[onclick*='purchase-screen']");
+            if (purchaseButton) {
+                navItems.forEach(item => item.classList.remove('active'));
+                purchaseButton.classList.add('active');
+            }
+            
+            let welcomeMessage = wasAlreadyAuthorized 
+                ? '歡迎返嚟。你喺購買頁面。長按兩秒即可發問商品資訊。'
+                : '多謝您嘅授權！你喺購買頁面。長按兩秒即可發問商品資訊。';
+
+            speak({ 
+                visual: welcomeMessage.split('。')[1] || welcomeMessage, 
+                spoken: welcomeMessage, 
+                duration: 6000 
+            });
+        }
+        
+        // --- Page Specific Logic ---
+        
         // --- Onboarding Logic ---
         const onboardingContainer = document.querySelector('.onboarding-slide-container');
         const nextButtons = document.querySelectorAll('.onboarding-content button');
@@ -432,7 +635,7 @@
                 }
             });
             
-            speak({ visual: slideInstructions[currentSlide].split('。')[0], spoken: slideInstructions[currentSlide], duration: 8000 });
+            speak({ visual: slideInstructions[currentSlide].split('。')[0], spoken: slideInstructions[currentSlide] });
         }
         
         nextButtons.forEach(button => button.addEventListener('click', goToNextSlide));
@@ -442,393 +645,27 @@
             }
         }));
 
-
-        // --- Main App Logic ---
-        const appContainer = document.getElementById('app-container');
-        const screens = document.querySelectorAll('.screen');
-        const navItems = document.querySelectorAll('.nav-item');
-        const voicePromptVisual = document.getElementById('voice-prompt-visual');
-        const voicePromptText = document.getElementById('voice-prompt-text');
-        const typingIndicator = document.getElementById('typing-indicator');
-        let voiceTimeout;
-        let stream;
-        let isListening = false;
-        // Removed `listeningForContinue` and `waitingForHistoryConfirmation` for simpler state management
-        let isAudioUnlocked = false; // Flag for mobile audio unlock
-        
-        // Mapping of screen IDs to their chat input/content elements
-        const chatScreenMap = {
-            'purchase-screen': { inputId: 'purchase-input', chatContentId: 'purchase-chat-content' },
-            'education-screen': { inputId: 'education-input', chatContentId: 'education-chat-content' }
-        };
-
-        // --- Interaction Logic ---
-        let longPressTimer;
-        let tapCount = 0;
-        let tapTimer;
-
-        // Long Press for Voice Commands
-        const startLongPress = (e) => {
-            if (e.target.closest('button, input')) return;
-            longPressTimer = setTimeout(() => {
-                startVoiceCommand();
-            }, 2000); // 2 seconds
-        };
-
-        const cancelLongPress = () => {
-            clearTimeout(longPressTimer);
-        };
-
-        appContainer.addEventListener('mousedown', startLongPress);
-        appContainer.addEventListener('mouseup', cancelLongPress);
-        appContainer.addEventListener('mouseleave', cancelLongPress);
-        appContainer.addEventListener('touchstart', startLongPress, { passive: true });
-        appContainer.addEventListener('touchend', cancelLongPress);
-        appContainer.addEventListener('touchmove', cancelLongPress);
-
-        // Tap Logic
-        appContainer.addEventListener('click', (e) => {
-            // Prevent tap logic from firing on buttons, inputs, or other interactive elements.
-            if (e.target.closest('button, input, .nav-item, .onboarding-content')) {
-                return;
-            }
-
-            tapCount++;
-            clearTimeout(tapTimer); // Clear previous timer
-
-            tapTimer = setTimeout(() => {
-                if (tapCount === 1) {
-                    // Single tap action
-                    handleSingleTap();
-                } else if (tapCount >= 2) {
-                    // Double tap action
-                    handleDoubleTap();
-                }
-                tapCount = 0; // Reset tap count after action
-            }, 300); // 300ms window for double tap
-        });
-
-        function handleSingleTap() {
-            const activeScreen = document.querySelector('.screen.active');
-            if (!activeScreen) return;
-
-            if (activeScreen.id === 'permission-screen') {
-                requestPermissions(true); // Grant
-            } else if (activeScreen.id === 'analysis-screen') {
-                const cameraView = document.getElementById('scan-camera-view');
-                const resultsView = document.getElementById('scan-results-view');
-                if ((cameraView && !cameraView.classList.contains('hidden')) || (resultsView && !resultsView.classList.contains('hidden'))) {
-                    resetScanView();
-                }
-            }
-        }
-
-        function handleDoubleTap() {
-            const activeScreen = document.querySelector('.screen.active');
-            if (!activeScreen) return;
-
-            if (activeScreen.id === 'permission-screen') {
-                requestPermissions(false); // Deny
-            } else if (activeScreen.id === 'analysis-screen') {
-                const cameraView = document.getElementById('scan-camera-view');
-                const resultsView = document.getElementById('scan-results-view');
-
-                if (cameraView && !cameraView.classList.contains('hidden')) {
-                    startScan();
-                } else if (resultsView && !resultsView.classList.contains('hidden')) {
-                    rescanFromResults();
-                } else {
-                    startScanProcess();
-                }
-            }
-        }
-
-        // --- SPEECH SYNTHESIS & RECOGNITION ---
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        let recognition;
-
-        if (SpeechRecognition) {
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.lang = 'zh-HK'; // Explicitly set language to Cantonese
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-
-            recognition.onstart = () => { isListening = true; };
-            recognition.onend = () => { isListening = false; };
-            
-            recognition.onresult = (event) => {
-                const command = event.results[0][0].transcript.trim().toLowerCase().replace(/[.,。]/g, '');
-                const originalTranscript = event.results[0][0].transcript;
-                const activeScreenEl = document.querySelector('.screen.active');
-                const activeScreenId = activeScreenEl ? activeScreenEl.id : null;
-
-                // --- General Command Processing ---
-                const navCommands = {
-                    '購買': 'purchase-screen', '買': 'purchase-screen',
-                    '分析': 'analysis-screen', '掃描': 'analysis-screen', '素描': 'analysis-screen',
-                    '週期': 'tracker-screen',
-                    '學習': 'education-screen'
-                };
-                
-                // New logic: Check for specific context-dependent commands first
-                if (activeScreenId === 'tracker-screen' && (command.includes('繼續') || command.includes('go on'))) {
-                     speak({ visual: "為您詳細說明...", spoken: "您嘅經期預計喺8月26號到29號，排卵日大約喺8月12號。", duration: 6000 });
-                     return;
-                }
-                
-                if (activeScreenId === 'analysis-screen' && (command.includes('需要') || command.includes('好') || command.includes('yes'))) {
-                    readHistory();
-                    return;
-                }
-
-
-                // Prioritize navigation commands
-                const isNavCommand = Object.keys(navCommands).some(key => command.includes(key));
-                
-                if (isNavCommand) {
-                    processVoiceCommand(command);
-                    return;
-                }
-                
-                // If not a navigation command, handle as chat input
-                if (chatScreenMap[activeScreenId]) {
-                    handleChatInput(originalTranscript, activeScreenId);
-                } else {
-                    // Fallback for non-chat screens like Analysis or Tracker
-                    speak({ visual: `對唔住，聽唔明指令「${command}」`, duration: 3000 });
-                }
-            };
-
-            recognition.onerror = (event) => {
-                isListening = false;
-                if (event.error !== 'no-speech') {
-                    speak({ visual: `語音識別出錯：${event.error}`, duration: 3000 });
-                }
-            };
-        }
-
-        function speak({ visual, spoken, duration = 4000, onEndCallback }) {
-            // Ensure speech synthesis is available
-            if (!('speechSynthesis' in window)) {
-                console.warn("Speech synthesis not supported.");
-                if (onEndCallback && typeof onEndCallback === 'function') onEndCallback();
-                return;
-            }
-            const trySpeak = () => {
-                const voices = window.speechSynthesis.getVoices();
-                if (voices.length === 0 && duration > 0) {
-                    setTimeout(trySpeak, 100);
-                    return;
-                }
-                
-                const textToSpeak = spoken || visual;
-                voicePromptText.textContent = visual;
-                voicePromptVisual.classList.add('visible');
-                if (voiceTimeout) clearTimeout(voiceTimeout);
-                
-                const utterance = new SpeechSynthesisUtterance(textToSpeak);
-                utterance.lang = 'zh-HK';
-                
-                const cantoneseVoice = voices.find(voice => voice.lang === 'zh-HK');
-                if (cantoneseVoice) {
-                    utterance.voice = cantoneseVoice;
-                }
-
-                utterance.rate = 1.0;
-                
-                utterance.onend = () => {
-                    voicePromptVisual.classList.remove('visible');
-                    if (onEndCallback && typeof onEndCallback === 'function') {
-                        onEndCallback();
-                    }
-                };
-                
-                window.speechSynthesis.speak(utterance);
-            };
-            trySpeak();
-        }
-        
-        async function checkPermissionsAndStart() {
-            if (navigator.permissions && navigator.permissions.query) {
-                try {
-                    const micPermission = await navigator.permissions.query({ name: 'microphone' });
-                    const cameraPermission = await navigator.permissions.query({ name: 'camera' });
-                    if (micPermission.state === 'granted' && cameraPermission.state === 'granted') {
-                        initializeApp(true); // Already authorized
-                    } else {
-                        document.getElementById('onboarding-screen').classList.add('active');
-                        updateOnboardingView();
-                    }
-                } catch (e) {
-                    // Fallback for browsers that don't support query (like some versions of Firefox)
-                    document.getElementById('onboarding-screen').classList.add('active');
-                    updateOnboardingView();
-                }
-            } else {
-                // Fallback for older browsers
-                document.getElementById('onboarding-screen').classList.add('active');
-                updateOnboardingView();
-            }
-        }
-
         function showPermissionScreen() {
             document.getElementById('onboarding-screen').classList.remove('active');
             document.getElementById('permission-screen').classList.add('active');
-            speak({ visual: "請授權使用麥克風和相機", spoken: "為咗提供完整功能，我哋需要您授權使用麥克風同相機。輕按一下屏幕同意授權，或按兩下拒絕授權", duration: 8000 });
+            speak({ visual: "請授權使用麥克風和相機", spoken: "為咗提供完整功能，我哋需要您授權使用麥克風同相機。輕按一下屏幕同意授權，或按兩下拒絕授權" });
         }
 
         function startApp() {
             showPermissionScreen();
         }
 
-        async function requestPermissions(grant) {
-            if (grant) {
-                try {
-                    // Request permissions
-                    const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                    // Immediately stop the tracks as we only need the permission, not the stream itself
-                    mediaStream.getTracks().forEach(track => track.stop());
-                    // Initialize the app immediately after getting permission
-                    initializeApp(false);
-                } catch (err) {
-                    console.error("Permission denied:", err);
-                    handlePermissionDenial();
-                }
-            } else {
-                handlePermissionDenial();
-            }
-        }
-
-        function handlePermissionDenial() {
-            const permissionScreen = document.getElementById('permission-screen');
-            const p = permissionScreen.querySelector('p');
-            const btn = permissionScreen.querySelector('button');
-            
-            p.textContent = '權限已被拒絕。語音同掃描功能將無法使用。請喺瀏覽器設定中允許權限，然後再試一次。';
-            btn.textContent = '再試一次';
-            btn.onclick = () => showPermissionScreen(); // Make the button try again
-            
-            speak({ visual: "權限被拒絕。部分核心功能將無法使用。", duration: 5000 });
-        }
-
-        function initializeApp(wasAlreadyAuthorized = false) {
-            // Hide setup screens
-            document.getElementById('onboarding-screen').classList.remove('active');
-            document.getElementById('permission-screen').classList.remove('active');
-            
-            // Show main UI
-            document.getElementById('app-header').style.opacity = 1;
-            document.getElementById('bottom-nav').classList.add('visible');
-            
-            // Populate screen content
-            setScreenContent();
-            
-            // Setup chat input listeners
-            setupTypingIndicator('purchase-input');
-            setupTypingIndicator('education-input');
-
-            // Set default screen
-            document.getElementById('purchase-screen').classList.add('active');
-            const purchaseButton = document.querySelector("button[onclick*='purchase-screen']");
-            if (purchaseButton) {
-                navItems.forEach(item => item.classList.remove('active'));
-                purchaseButton.classList.add('active');
-            }
-            
-            // Announce welcome message
-            let welcomeMessage = wasAlreadyAuthorized 
-                ? '歡迎返嚟。你喺購買頁面。長按兩秒即可發問商品資訊。'
-                : '多謝您嘅授權！你喺購買頁面。長按兩秒即可發問商品資訊。';
-
-            speak({ 
-                visual: welcomeMessage.split('。')[1] || welcomeMessage, 
-                spoken: welcomeMessage, 
-                duration: 6000 
-            });
-        }
-
-        function startVoiceCommand(options = {}) {
-            if (isListening) return;
-            if (recognition) {
-                try {
-                    recognition.start();
-                    if (!options.silent) {
-                        speak({ visual: '聆聽中...', duration: 2000 });
-                    }
-                } catch(e) {
-                    console.error("Recognition start error:", e);
-                    isListening = false;
-                    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
-                        speak({ visual: "請先授權麥克風權限", duration: 3000 });
-                    } else {
-                        speak({ visual: "語音功能目前無法使用", duration: 3000 });
-                    }
-                }
-            } else {
-                speak({ visual: "對唔住，您嘅瀏覽器唔支援語音識別功能。", duration: 4000 });
-            }
-        }
-        
-        function processVoiceCommand(command) {
-            const cmd = command.trim().toLowerCase();
-            const activeScreenId = document.querySelector('.screen.active').id;
-            
-            // Handle context-specific commands first
-            if (activeScreenId === 'tracker-screen' && (cmd.includes('繼續') || cmd.includes('go on'))) {
-                 speak({ visual: "為您詳細說明...", spoken: "您嘅經期預計喺8月26號到29號，排卵日大約喺8月12號。", duration: 6000 });
-                 return;
-            }
-            
-            if (activeScreenId === 'analysis-screen' && (cmd.includes('需要') || cmd.includes('好') || cmd.includes('yes'))) {
-                readHistory();
-                return;
-            }
-
-            // Handle navigation commands
-            const navCommands = {
-                '購買': 'purchase-screen', '買': 'purchase-screen',
-                '分析': 'analysis-screen', '掃描': 'analysis-screen', '素描': 'analysis-screen',
-                '週期': 'tracker-screen',
-                '學習': 'education-screen'
-            };
-            
-            const isNavCommand = Object.keys(navCommands).some(key => cmd.includes(key));
-            
-            if (isNavCommand) {
-                // If a navigation command is detected, navigate
-                let targetScreen = navCommands[Object.keys(navCommands).find(key => cmd.includes(key))];
-                if (targetScreen) {
-                    const targetElement = document.querySelector(`#bottom-nav button[onclick*="${targetScreen}"]`);
-                    if (targetElement) {
-                        navigate(targetScreen, targetElement);
-                    }
-                }
-                return;
-            }
-            
-            // If not a navigation command, handle as chat input
-            if (chatScreenMap[activeScreenId]) {
-                handleChatInput(cmd, activeScreenId);
-            } else {
-                // Fallback for non-chat screens like Analysis or Tracker
-                speak({ visual: `對唔住，聽唔明指令「${cmd}」`, duration: 3000 });
-            }
-        }
-        
-        // New function to handle voice input as chat message
         function handleChatInput(transcript, screenId) {
             const { inputId, chatContentId } = chatScreenMap[screenId];
             if (inputId) {
                 const inputField = document.getElementById(inputId);
                 inputField.value = transcript;
-                // Programmatically trigger the send button to send the message
                 const sendButtonId = screenId === 'purchase-screen' ? 'send-purchase-btn' : 'send-education-btn';
                 document.getElementById(sendButtonId).click();
             }
         }
-
-
+        
+        // --- Analysis Page Functions ---
         async function initCamera() {
             let cameraView = document.getElementById('camera-view');
             if (!cameraView) return;
@@ -841,74 +678,26 @@
                 cameraView.srcObject = stream;
             } catch (err) {
                 console.error("Error accessing camera: ", err);
-                speak({ visual: "無法開啟相機，請先授權。", duration: 5000 });
+                speak({ visual: "無法開啟相機，請先授權。", spoken: "無法開啟相機，請先授權。" });
                 resetScanView();
             }
         }
 
-        function navigate(screenId, clickedElement) {
-            if (screenId !== 'analysis-screen' && stream) {
-                stream.getTracks().forEach(track => track.stop());
-            }
-
-            screens.forEach(s => s.classList.remove('active'));
-            document.getElementById(screenId).classList.add('active');
-
-            navItems.forEach(item => item.classList.remove('active'));
-            clickedElement.classList.add('active');
-            
-            const announcements = {
-                'purchase-screen': { visual: '你在購買頁面。長按兩秒即可發問。', spoken: '你在購買頁面。長按兩秒即可發問商品資訊。' }, 
-                'analysis-screen': { visual: '分析頁', spoken: '你已到達分析頁。需要為您讀出歷史記錄嗎？如需要請回答，需要，如不需要請忽略'},
-                'tracker-screen': { visual: '週期追蹤', spoken: '週期追蹤。距離下次經期預計仲有15日。如需更加詳細，請講繼續'},
-                'education-screen': { visual: '學習頁。長按兩秒即可發問。', spoken: '學習頁。長按兩秒即可發問問題。'}
-            };
-            const announcement = announcements[screenId];
-            if(announcement) {
-                const onEndCallback = () => {
-                    // Start listening after a short delay to ensure speech is finished
-                    setTimeout(() => {
-                        startVoiceCommand({ silent: true });
-                    }, 500); // 500ms delay
-                };
-
-                speak({ 
-                    visual: announcement.visual, 
-                    spoken: announcement.spoken, 
-                    onEndCallback: onEndCallback
-                });
-            }
-        }
-
-        function readHistory() {
-            const historyItems = document.querySelectorAll('#scan-history-card .flex.justify-between');
-            if (historyItems.length === 0) {
-                speak({ visual: "暫無歷史記錄", spoken: "暫無歷史記錄", duration: 3000 });
-                return;
-            }
-
-            let historyText = "好的，為您讀出歷史記錄。";
-            historyItems.forEach(item => {
-                const date = item.children[0].textContent;
-                const result = item.children[1].textContent;
-                historyText += `${date}嘅記錄係，${result}。`;
-            });
-
-            speak({ visual: "正在讀出歷史記錄...", spoken: historyText, duration: historyItems.length * 4000 });
-        }
-        
         function startScanProcess() {
             document.getElementById('scan-intro-view').classList.add('hidden');
             document.getElementById('scan-camera-view').classList.remove('hidden');
             document.getElementById('scan-results-view').classList.add('hidden');
             initCamera();
-            speak({ visual: "請將衛生巾對準鏡頭。", spoken: "請將衛生巾對準鏡頭。輕按一下返回，輕按兩下或按下面按鈕開始掃描。", duration: 6000 });
+            speak({ 
+                visual: "請將衛生巾對準鏡頭", 
+                spoken: "請將衛生巾對準鏡頭，按兩下屏幕開始掃描，按一下屏幕即可返回" 
+            });
         }
 
         function startScan() {
             let scanOverlay = document.getElementById('scan-overlay');
             if(scanOverlay) scanOverlay.style.display = 'flex';
-            speak({ visual: '收到。正在開始掃描分析，請稍候...' });
+            speak({ visual: '收到。正在開始掃描分析...', spoken: '收到，正在開始掃描分析' });
             setTimeout(() => {
                 if(scanOverlay) scanOverlay.style.display = 'none';
                 displayRandomResult();
@@ -950,7 +739,7 @@
                 `;
                 document.getElementById('scan-camera-view').classList.add('hidden');
                 resultsView.classList.remove('hidden');
-                speak({ visual: `分析完成。結果為${result.title}。${result.summary}`, spoken: `分析完成。結果為${result.title}。${result.summary}。輕按一下返回，輕按兩下或按下面按鈕重新掃描。` });
+                speak({ visual: `分析完成。結果為${result.title}`, spoken: `分析完成，結果為${result.title}，按一下返回，按兩下重新掃描` });
             }
         }
         
@@ -966,11 +755,29 @@
                     stream.getTracks().forEach(track => track.stop());
                 }
                 if (!silent) {
-                    speak({ visual: "返回成功", duration: 2000 });
+                    speak({ visual: "返回成功", spoken: "返回成功" });
                 }
             }
         }
+
+        function readHistory() {
+            const historyItems = document.querySelectorAll('#scan-history-card .flex.justify-between');
+            if (historyItems.length === 0) {
+                speak({ visual: "暫無歷史記錄", spoken: "暫無歷史記錄" });
+                return;
+            }
+
+            let historyText = "好的，為您讀出歷史記錄。";
+            historyItems.forEach(item => {
+                const date = item.children[0].textContent;
+                const result = item.children[1].textContent;
+                historyText += `${date}嘅記錄係，${result}。`;
+            });
+
+            speak({ visual: "正在讀出歷史記錄...", spoken: historyText });
+        }
         
+        // --- Tracker Page Functions ---
         function generateCalendar(year, month, containerId) {
             const container = document.getElementById(containerId);
             if (!container) return;
@@ -983,9 +790,9 @@
             
             let calendarHTML = `
                 <div class="flex justify-between items-center mb-4">
-                    <button class="p-2 rounded-full hover:bg-gray-100">&lt;</button>
+                    <button class="p-2 rounded-full hover:bg-gray-100" onclick="alert('上個月')">&lt;</button>
                     <h3 class="font-bold text-lg">${year}年 ${monthNames[month]}</h3>
-                    <button class="p-2 rounded-full hover:bg-gray-100">&gt;</button>
+                    <button class="p-2 rounded-full hover:bg-gray-100" onclick="alert('下個月')">&gt;</button>
                 </div>
                 <div class="calendar">
             `;
@@ -1003,11 +810,11 @@
 
             for (let day = 1; day <= daysInMonth; day++) {
                 let classes = 'calendar-day';
-                // Mock data for August 2025
-                if (year === 2025 && month === 7) {
-                    if ([26, 27, 28, 29].includes(day)) classes += ' menstruation';
-                    else if (day === 12) classes += ' ovulation';
-                    else if (day >= 10 && day <= 15) classes += ' fertile';
+                // Mock data for September 2025
+                if (year === 2025 && month === 8) {
+                    if ([9, 10, 11, 12].includes(day)) classes += ' menstruation';
+                    else if (day === 26) classes += ' ovulation';
+                    else if (day >= 24 && day <= 29) classes += ' fertile';
                     else classes += ' safe';
                 } else {
                     classes += ' safe';
@@ -1059,7 +866,7 @@
                     <div id="scan-intro-view">
                         <div class="card text-center">
                             <h3 class="text-xl font-bold text-gray-800 mb-2">經血掃描分析</h3>
-                            <p class="text-gray-600 mb-6">您可以講出「掃描」或「分析」嚟啟動相機。</p>
+                            <p class="text-gray-600 mb-6" id="scan-intro-text">你可以講出「掃描」或「分析」嚟啟動相機。</p>
                             <button class="w-full bg-purple-600 text-white font-bold py-3 px-4 rounded-lg" onclick="startScanProcess()">開始掃描</button>
                         </div>
                         <div class="card" id="scan-history-card">
@@ -1098,7 +905,7 @@
                     <div class="card text-center">
                         <p class="text-gray-600 text-lg">距離下次經期預計仲有</p>
                         <p class="text-7xl font-bold text-purple-600 my-4">15 <span class="text-2xl font-medium text-gray-700">日</span></p>
-                        <p class="text-sm text-gray-500">預計日期：2025年8月26日</p>
+                        <p class="text-sm text-gray-500">預計日期：2025年9月9日</p>
                     </div>
                     <div class="card">
                         <div id="calendar-container"></div>
@@ -1143,7 +950,7 @@
                 </div>`;
         
             // Generate calendar for a specific date for consistent demo
-            generateCalendar(2025, 7, 'calendar-container'); // August 2025
+            generateCalendar(2025, 8, 'calendar-container'); // September 2025
         }
 
         function sendMessage(inputId, chatContentId, isPurchase = false) {
@@ -1175,7 +982,7 @@
                     </div>`;
                 chatContent.appendChild(aiResponseDiv);
                 chatContentContainer.scrollTop = chatContentContainer.scrollHeight;
-                speak({ visual: aiMessage, spoken: aiSpokenMessage, duration: 4000 });
+                speak({ visual: aiMessage, spoken: aiSpokenMessage });
             }, 1000);
         }
 
@@ -1199,46 +1006,36 @@
         };
 
         function unlockAudio() {
-            if (isAudioUnlocked) return;
-            // For speechSynthesis on iOS, a silent utterance is the most reliable way.
+            if (window.speechSynthesis.getVoices().length > 0) return;
             const utterance = new SpeechSynthesisUtterance('');
             window.speechSynthesis.speak(utterance);
-            isAudioUnlocked = true;
-            console.log("Speech Synthesis unlocked for iOS.");
         }
 
         window.onload = () => {
             const splashScreen = document.getElementById('splash-screen');
             let startTimeout;
             let flowStarted = false;
-
-            // Pre-warm the speech synthesis engine by getting voices early
+            
             if ('speechSynthesis' in window) {
-                // This helps, but the user interaction is still key on mobile
                 window.speechSynthesis.getVoices();
             }
 
             const startAppFlow = () => {
-                if (flowStarted) return; // Prevent multiple executions
+                if (flowStarted) return;
                 flowStarted = true;
-                unlockAudio(); // Unlock audio on the first user interaction
+                unlockAudio();
                 clearTimeout(startTimeout); 
                 splashScreen.removeEventListener('click', startAppFlow);
                 splashScreen.classList.add('fade-out');
                 setTimeout(() => {
                     splashScreen.style.display = 'none';
                     checkPermissionsAndStart(); 
-                }, 500); // Match fade-out duration
+                }, 500);
             };
 
-            // Set a timeout to automatically proceed after 3 seconds
             startTimeout = setTimeout(startAppFlow, 3000); 
-
-            // Also allow the user to click to skip the timeout
             splashScreen.addEventListener('click', startAppFlow);
         };
-
     </script>
-
 </body>
 </html>
