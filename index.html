@@ -453,8 +453,7 @@
         let voiceTimeout;
         let stream;
         let isListening = false;
-        let listeningForContinue = false; // Flag for tracker-screen conversational flow
-        let waitingForHistoryConfirmation = false; // Flag for history prompt
+        // Removed `listeningForContinue` and `waitingForHistoryConfirmation` for simpler state management
         let isAudioUnlocked = false; // Flag for mobile audio unlock
         
         // Mapping of screen IDs to their chat input/content elements
@@ -564,17 +563,6 @@
                 const activeScreenEl = document.querySelector('.screen.active');
                 const activeScreenId = activeScreenEl ? activeScreenEl.id : null;
 
-                // --- State-dependent Conversational Logic ---
-                if (waitingForHistoryConfirmation) {
-                    waitingForHistoryConfirmation = false;
-                    if (command.includes('需要') || command.includes('好') || command.includes('yes')) {
-                        readHistory();
-                    } else {
-                        speak({ visual: "好的。", spoken: "好的。", duration: 2000 });
-                    }
-                    return;
-                }
-
                 // --- General Command Processing ---
                 const navCommands = {
                     '購買': 'purchase-screen', '買': 'purchase-screen',
@@ -583,6 +571,18 @@
                     '學習': 'education-screen'
                 };
                 
+                // New logic: Check for specific context-dependent commands first
+                if (activeScreenId === 'tracker-screen' && (command.includes('繼續') || command.includes('go on'))) {
+                     speak({ visual: "為您詳細說明...", spoken: "您嘅經期預計喺8月26號到29號，排卵日大約喺8月12號。", duration: 6000 });
+                     return;
+                }
+                
+                if (activeScreenId === 'analysis-screen' && (command.includes('需要') || command.includes('好') || command.includes('yes'))) {
+                    readHistory();
+                    return;
+                }
+
+
                 // Prioritize navigation commands
                 const isNavCommand = Object.keys(navCommands).some(key => command.includes(key));
                 
@@ -626,27 +626,24 @@
                 voicePromptText.textContent = visual;
                 voicePromptVisual.classList.add('visible');
                 if (voiceTimeout) clearTimeout(voiceTimeout);
-                voiceTimeout = setTimeout(() => {
-                    voicePromptVisual.classList.remove('visible');
-                }, duration);
-
-                window.speechSynthesis.cancel(); // Cancel any ongoing speech
+                
                 const utterance = new SpeechSynthesisUtterance(textToSpeak);
                 utterance.lang = 'zh-HK';
                 
-                // On iOS, we need to find and assign a specific Cantonese voice
                 const cantoneseVoice = voices.find(voice => voice.lang === 'zh-HK');
                 if (cantoneseVoice) {
                     utterance.voice = cantoneseVoice;
                 }
 
                 utterance.rate = 1.0;
-                if (onEndCallback && typeof onEndCallback === 'function') {
-                    utterance.onend = onEndCallback;
-                } else {
-                    // Fallback to ensure visual prompt hides if no callback
-                    utterance.onend = () => { /* do nothing, timeout will handle it */ };
-                }
+                
+                utterance.onend = () => {
+                    voicePromptVisual.classList.remove('visible');
+                    if (onEndCallback && typeof onEndCallback === 'function') {
+                        onEndCallback();
+                    }
+                };
+                
                 window.speechSynthesis.speak(utterance);
             };
             trySpeak();
@@ -775,27 +772,46 @@
         
         function processVoiceCommand(command) {
             const cmd = command.trim().toLowerCase();
+            const activeScreenId = document.querySelector('.screen.active').id;
             
-            // Handle specific commands that are not just navigation
-            if (listeningForContinue && (cmd.includes('繼續') || cmd.includes('go on'))) {
-                speak({ visual: "為您詳細說明...", spoken: "您嘅經期預計喺8月26號到29號，排卵日大約喺8月12號。", duration: 6000 });
-                listeningForContinue = false;
+            // Handle context-specific commands first
+            if (activeScreenId === 'tracker-screen' && (cmd.includes('繼續') || cmd.includes('go on'))) {
+                 speak({ visual: "為您詳細說明...", spoken: "您嘅經期預計喺8月26號到29號，排卵日大約喺8月12號。", duration: 6000 });
+                 return;
+            }
+            
+            if (activeScreenId === 'analysis-screen' && (cmd.includes('需要') || cmd.includes('好') || cmd.includes('yes'))) {
+                readHistory();
                 return;
             }
 
-            // Handle navigation
-            let targetScreen = '';
-            if (cmd.includes('買') || cmd.includes('purchase')) targetScreen = 'purchase-screen';
-            else if (cmd.includes('分析') || cmd.includes('health') || cmd.includes('掃描') || cmd.includes('素描')) targetScreen = 'analysis-screen';
-            else if (cmd.includes('週期') || cmd.includes('tracker')) targetScreen = 'tracker-screen';
-            else if (cmd.includes('學習') || cmd.includes('education')) targetScreen = 'education-screen';
-
-            if (targetScreen) {
-                const targetElement = document.querySelector(`#bottom-nav button[onclick*="${targetScreen}"]`);
-                if (targetElement) {
-                    navigate(targetScreen, targetElement);
+            // Handle navigation commands
+            const navCommands = {
+                '購買': 'purchase-screen', '買': 'purchase-screen',
+                '分析': 'analysis-screen', '掃描': 'analysis-screen', '素描': 'analysis-screen',
+                '週期': 'tracker-screen',
+                '學習': 'education-screen'
+            };
+            
+            const isNavCommand = Object.keys(navCommands).some(key => cmd.includes(key));
+            
+            if (isNavCommand) {
+                // If a navigation command is detected, navigate
+                let targetScreen = navCommands[Object.keys(navCommands).find(key => cmd.includes(key))];
+                if (targetScreen) {
+                    const targetElement = document.querySelector(`#bottom-nav button[onclick*="${targetScreen}"]`);
+                    if (targetElement) {
+                        navigate(targetScreen, targetElement);
+                    }
                 }
+                return;
+            }
+            
+            // If not a navigation command, handle as chat input
+            if (chatScreenMap[activeScreenId]) {
+                handleChatInput(cmd, activeScreenId);
             } else {
+                // Fallback for non-chat screens like Analysis or Tracker
                 speak({ visual: `對唔住，聽唔明指令「${cmd}」`, duration: 3000 });
             }
         }
@@ -831,10 +847,6 @@
         }
 
         function navigate(screenId, clickedElement) {
-            // Reset state flags when navigating
-            listeningForContinue = false; 
-            waitingForHistoryConfirmation = false;
-
             if (screenId !== 'analysis-screen' && stream) {
                 stream.getTracks().forEach(track => track.stop());
             }
@@ -853,15 +865,18 @@
             };
             const announcement = announcements[screenId];
             if(announcement) {
-                const duration = screenId === 'analysis-screen' ? 8000 : 6000;
-                speak({ visual: announcement.visual, spoken: announcement.spoken, duration: duration });
-                if (screenId === 'tracker-screen') {
-                    listeningForContinue = true;
-                    setTimeout(() => startVoiceCommand({ silent: true }), duration + 100);
-                } else if (screenId === 'analysis-screen') {
-                    waitingForHistoryConfirmation = true;
-                    setTimeout(() => startVoiceCommand({ silent: true }), duration + 100);
-                }
+                const onEndCallback = () => {
+                    // Start listening after a short delay to ensure speech is finished
+                    setTimeout(() => {
+                        startVoiceCommand({ silent: true });
+                    }, 500); // 500ms delay
+                };
+
+                speak({ 
+                    visual: announcement.visual, 
+                    spoken: announcement.spoken, 
+                    onEndCallback: onEndCallback
+                });
             }
         }
 
